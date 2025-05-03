@@ -8,7 +8,11 @@ from datetime import datetime
 import time
 import math
 
-API_KEY = "API KEY HERE"  # Replace with your actual API key
+# Before running the script, get your API key using these steps:
+# 1.  **API Key:**
+#     *   Obtain your own YouTube Data API v3 key from the [Google Cloud Console](https://console.cloud.google.com/).
+#     *   **Note:** For security reasons, the API key is not included directly in the submitted code.
+API_KEY = "API Key"  # Replace with your actual API key
 API_SERVICE_NAME = "youtube"
 API_VERSION = "v3"
 CSV_FILE_PATH = 'youtube_channels_sample - Youtube.csv'

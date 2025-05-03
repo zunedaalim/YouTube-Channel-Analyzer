@@ -1,0 +1,19 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Output files (usually generated, not source)
+youtube_channel_analysis_results.csv
+
+# Virtual environment folder (if you use one)
+venv/
+.venv/
+
+# Secrets / Config files (if you create one for your API key)
+config.py
+secrets.txt
+.env
+
+# IDE specific files
+.idea/
+.vscode/
