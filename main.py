@@ -8,11 +8,8 @@ from datetime import datetime
 import time
 import math
 
-# Before running the script, get your API key using these steps:
-# 1.  **API Key:**
-#     *   Obtain your own YouTube Data API v3 key from the [Google Cloud Console](https://console.cloud.google.com/).
-#     *   **Note:** For security reasons, the API key is not included directly in the submitted code.
-API_KEY = "API Key"  # Replace with your actual API key
+# -- API Setup (remember to plug in your own key!) --
+API_KEY = "API Key"  # <<< Don't forget to update this!
 API_SERVICE_NAME = "youtube"
 API_VERSION = "v3"
 CSV_FILE_PATH = 'youtube_channels_sample - Youtube.csv'
@@ -22,490 +19,256 @@ VIDEOS_TO_FETCH_PER_CHANNEL = 15
 COLUMN_NAME_WITH_URLS = 'Youtube Profiles'
 
 
-def get_channel_id_from_input(url_or_handle, youtube):
-
-    match = re.search(r'/channel/([A-Za-z0-9_-]+)', url_or_handle)
+def extract_channel_id(profile_url, yt_client):
+    # This function is a bit overgrown — handles various URL formats
+    match = re.search(r'/channel/([A-Za-z0-9_-]+)', profile_url)
     if match:
-        print(f"Found direct channel ID: {match.group(1)}")
         return match.group(1)
 
-    match = re.search(r'@([A-Za-z0-9_.-]+)', url_or_handle)
+    # Handle-style input
+    match = re.search(r'@([\w.-]+)', profile_url)
     if match:
         handle = match.group(1)
-        print(f"Searching for handle: @{handle}")
+        print(f"Looking up channel for handle: @{handle}")
         try:
-            search_response = youtube.search().list(
-                q=f"@{handle}",
-                part="snippet",
-                type="channel",
-                maxResults=1
+            result = yt_client.search().list(
+                q=f"@{handle}", part="snippet", type="channel", maxResults=1
             ).execute()
-            if search_response.get("items"):
-                channel_id = search_response["items"][0]["snippet"]["channelId"]
-                print(f"Found channel ID via handle search: {channel_id}")
-                return channel_id
-            else:
-                print(f"Could not find channel via handle search: @{handle}")
-                return None
-        except HttpError as e:
-            print(f"API error searching for handle @{handle}: {e}")
+            if result.get("items"):
+                return result["items"][0]["snippet"]["channelId"]
+        except HttpError as err:
+            print(f"Search API error for handle @{handle}: {err}")
 
-    match = re.search(r'/c/([A-Za-z0-9_-]+)', url_or_handle)
-    if match:
-        custom_url_part = match.group(1)
-        print(f"Searching for custom URL part: {custom_url_part}")
-        try:
-            search_response = youtube.search().list(
-                q=custom_url_part,
-                part="snippet",
-                type="channel",
-                maxResults=1
-            ).execute()
-            if search_response.get("items"):
-                found_channel = search_response["items"][0]["snippet"]
-                if custom_url_part.lower() in found_channel.get('title', '').lower() or \
-                   custom_url_part.lower() in found_channel.get('customUrl', '').lower():
-                    channel_id = found_channel["channelId"]
-                    print(
-                        f"Found channel ID via custom URL search: {channel_id}")
-                    return channel_id
+    # For /c/ and /user/ links, fallback to keyword search
+    for regex, desc in [(r'/c/([\w-]+)', 'custom URL'), (r'/user/([\w-]+)', 'legacy username')]:
+        match = re.search(regex, profile_url)
+        if match:
+            keyword = match.group(1)
+            print(f"Trying {desc} lookup: {keyword}")
+            try:
+                if 'user' in desc:
+                    user_resp = yt_client.channels().list(part="id", forUsername=keyword).execute()
+                    if user_resp.get("items"):
+                        return user_resp["items"][0]["id"]
                 else:
-                    print(
-                        f"Search result for '{custom_url_part}' doesn't seem to match. Title: {found_channel.get('title','')}")
+                    search_resp = yt_client.search().list(q=keyword, part="snippet", type="channel", maxResults=1).execute()
+                    if search_resp.get("items"):
+                        return search_resp["items"][0]["snippet"]["channelId"]
+            except HttpError as err:
+                print(f"Error during {desc} search for {keyword}: {err}")
 
-            else:
-                print(
-                    f"Could not find channel via custom URL search: {custom_url_part}")
-
-        except HttpError as e:
-            print(f"API error searching for custom URL {custom_url_part}: {e}")
-
-    match = re.search(r'/user/([A-Za-z0-9_-]+)', url_or_handle)
-    if match:
-        username = match.group(1)
-        print(f"Trying lookup by legacy username: {username}")
+    # Last ditch: treat input as a general search query
+    if not profile_url.startswith(('http', '/', '@')):
         try:
-            channel_response = youtube.channels().list(
-                part="id",
-                forUsername=username
-            ).execute()
-            if channel_response.get("items"):
-                channel_id = channel_response["items"][0]["id"]
-                print(f"Found channel ID via legacy username: {channel_id}")
-                return channel_id
-            else:
-                print(
-                    f"Could not find channel via legacy username: {username}")
-        except HttpError as e:
-            print(f"API error looking up legacy username {username}: {e}")
+            search_resp = yt_client.search().list(q=profile_url, part="snippet", type="channel", maxResults=1).execute()
+            if search_resp.get("items"):
+                return search_resp["items"][0]["snippet"]["channelId"]
+        except HttpError as err:
+            print(f"General search failed for input '{profile_url}': {err}")
 
-    if not url_or_handle.startswith(('http', '/', '@')):
-        print(f"Attempting general search for: {url_or_handle}")
-        try:
-            search_response = youtube.search().list(
-                q=url_or_handle,
-                part="snippet",
-                type="channel",
-                maxResults=1
-            ).execute()
-            if search_response.get("items"):
-                channel_id = search_response["items"][0]["snippet"]["channelId"]
-                print(f"Found channel ID via general search: {channel_id}")
-                return channel_id
-            else:
-                print(
-                    f"Could not find channel via general search: {url_or_handle}")
-        except HttpError as e:
-            print(f"API error during general search for {url_or_handle}: {e}")
-
-    print(f"Could not determine channel ID for input: {url_or_handle}")
+    print(f"No valid channel ID found for: {profile_url}")
     return None
 
 
-def get_channel_data(channel_id, youtube):
+def fetch_channel_info(cid, yt_client):
     try:
-        request = youtube.channels().list(
-            part="snippet,statistics,contentDetails",
-            id=channel_id
-        )
-        response = request.execute()
-
-        if not response.get("items"):
-            print(f"Channel not found for ID: {channel_id}")
+        resp = yt_client.channels().list(part="snippet,statistics,contentDetails", id=cid).execute()
+        if not resp.get("items"):
+            print(f"No data returned for channel ID: {cid}")
             return None
 
-        channel_data = response["items"][0]
-        stats = channel_data.get("statistics", {})
-        snippet = channel_data.get("snippet", {})
-        content_details = channel_data.get("contentDetails", {})
+        info = resp["items"][0]
+        stats = info.get("statistics", {})
+        details = info.get("contentDetails", {})
+        snippet = info.get("snippet", {})
 
-        subs_hidden = stats.get('hiddenSubscriberCount', False)
-        subs_count = int(stats.get("subscriberCount", 0)
-                         ) if not subs_hidden else 'Hidden'
+        # This avoids crashing on private subscriber counts
+        sub_count = int(stats.get("subscriberCount", 0)) if not stats.get("hiddenSubscriberCount") else 'Hidden'
 
         return {
             "channel_name": snippet.get("title"),
-            "channel_id": channel_id,
-            "subscribers": subs_count,
+            "channel_id": cid,
+            "subscribers": sub_count,
             "total_views": int(stats.get("viewCount", 0)),
             "total_videos": int(stats.get("videoCount", 0)),
-            "uploads_playlist_id": content_details.get("relatedPlaylists", {}).get("uploads"),
-            "description": snippet.get("description"),  # Added description
+            "uploads_playlist_id": details.get("relatedPlaylists", {}).get("uploads"),
+            "description": snippet.get("description"),
             "published_at": snippet.get("publishedAt"),
         }
-    except HttpError as e:
-        print(
-            f"An API error occurred getting channel data for {channel_id}: {e}")
-        if e.resp.status == 403 and 'quotaExceeded' in str(e):
-            print("Quota Exceeded. Please wait or increase your quota.")
-            raise e
-        return None
-    except Exception as e:
-        print(
-            f"An unexpected error occurred getting channel data for {channel_id}: {e}")
+    except HttpError as err:
+        print(f"API Error while fetching channel info: {err}")
         return None
 
 
-def get_video_details(video_ids, youtube):
-    video_stats = {}
-    for i in range(0, len(video_ids), 50):
-        batch_ids = video_ids[i:i+50]
+def fetch_videos_from_playlist(playlist_id, yt_client, limit=VIDEOS_TO_FETCH_PER_CHANNEL):
+    all_videos = []
+    ids_to_lookup = []
+    page_token = None
+
+    while len(ids_to_lookup) < limit:
         try:
-            request = youtube.videos().list(
-                part="statistics,snippet",
-                id=",".join(batch_ids)
-            )
-            response = request.execute()
-
-            for item in response.get("items", []):
-                video_id = item["id"]
-                stats = item.get("statistics", {})
-                snippet = item.get("snippet", {})
-                likes = stats.get("likeCount")
-                video_stats[video_id] = {
-                    'likes': int(likes) if likes is not None else 0,
-                    'views': int(stats.get("viewCount", 0)),
-                    'comments': int(stats.get("commentCount", 0)),
-                    'title': snippet.get('title', 'N/A')
-                }
-        except HttpError as e:
-            print(f"An API error occurred getting video details: {e}")
-            for vid in batch_ids:
-                if vid not in video_stats:
-                    video_stats[vid] = {'likes': 0, 'views': 0,
-                                        'comments': 0, 'title': 'Error Fetching'}
-            if e.resp.status == 403 and 'quotaExceeded' in str(e):
-                print("Quota Exceeded during video detail fetch.")
-                raise e
-        except Exception as e:
-            print(f"An unexpected error occurred getting video details: {e}")
-            for vid in batch_ids:
-                if vid not in video_stats:
-                    video_stats[vid] = {'likes': 0, 'views': 0,
-                                        'comments': 0, 'title': 'Error Fetching'}
-
-    return video_stats
-
-
-def get_recent_videos_and_stats(playlist_id, youtube, max_results=VIDEOS_TO_FETCH_PER_CHANNEL):
-    video_data = []
-    video_ids = []
-    try:
-        next_page_token = None
-        while len(video_ids) < max_results:
-            request = youtube.playlistItems().list(
+            resp = yt_client.playlistItems().list(
                 part="snippet,contentDetails",
                 playlistId=playlist_id,
-                maxResults=min(50, max_results - len(video_ids)
-                               ),
-                pageToken=next_page_token
-            )
-            response = request.execute()
+                maxResults=min(50, limit - len(ids_to_lookup)),
+                pageToken=page_token
+            ).execute()
 
-            for item in response.get("items", []):
-                video_id = item.get("contentDetails", {}).get("videoId")
-                published_at_str = item.get("contentDetails", {}).get(
-                    "videoPublishedAt")
-                if not published_at_str:
-                    published_at_str = item.get(
-                        "snippet", {}).get("publishedAt")
+            for entry in resp.get("items", []):
+                video_id = entry.get("contentDetails", {}).get("videoId")
+                pub_date = entry.get("contentDetails", {}).get("videoPublishedAt") or \
+                           entry.get("snippet", {}).get("publishedAt")
 
-                if video_id and published_at_str:
+                if video_id and pub_date:
                     try:
-                        published_date = datetime.fromisoformat(
-                            published_at_str.replace('Z', '+00:00'))
-                        video_ids.append(video_id)
-                        video_data.append({
-                            "id": video_id,
-                            "published_at": published_date,
-                        })
-                    except ValueError:
-                        print(
-                            f"Could not parse date: {published_at_str} for video {video_id}")
+                        dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                        all_videos.append({"id": video_id, "published_at": dt})
+                        ids_to_lookup.append(video_id)
+                    except Exception:
+                        print(f"Couldn't parse date for video: {video_id}")
 
-            next_page_token = response.get("nextPageToken")
-            if not next_page_token:
+            page_token = resp.get("nextPageToken")
+            if not page_token:
                 break
+        except HttpError as err:
+            print(f"Error retrieving playlist: {err}")
+            break
 
-    except HttpError as e:
-        print(f"An API error occurred getting playlist items: {e}")
-        if e.resp.status == 403 and 'quotaExceeded' in str(e):
-            print("Quota Exceeded during playlist fetch.")
-            raise e
-        if e.resp.status == 404:
-            print(
-                f"Uploads playlist {playlist_id} not found or access denied.")
-            return [], {}, 0.0, []
-    except Exception as e:
-        print(f"An unexpected error occurred getting playlist items: {e}")
-
-    if not video_ids:
-        print("No video IDs found for analysis.")
+    if not ids_to_lookup:
         return [], {}, 0.0, []
 
-    print(f"Fetching details for {len(video_ids)} videos...")
-    video_stats = get_video_details(video_ids, youtube)
+    print(f"Retrieving stats for {len(ids_to_lookup)} videos...")
+    video_stats = retrieve_video_stats(ids_to_lookup, yt_client)
+
+    # Enrich data and calculate avg likes
     total_likes = 0
-    valid_videos_for_likes = 0
-    recent_titles = []
+    titles = []
+    for v in all_videos:
+        stats = video_stats.get(v["id"], {})
+        v.update(stats)
+        titles.append(stats.get("title", "N/A"))
+        total_likes += stats.get("likes", 0)
 
-    for video in video_data:
-        stats = video_stats.get(video["id"])
-        if stats:
-            video.update(stats)
-            total_likes += stats['likes']
-            valid_videos_for_likes += 1
-            recent_titles.append(stats['title'])
-        else:
-            video.update(
-                {'likes': 0, 'views': 0, 'comments': 0, 'title': 'N/A'})
-            recent_titles.append('N/A')
+    avg_likes = total_likes / len(all_videos) if all_videos else 0
+    all_videos.sort(key=lambda x: x["published_at"])
 
-    avg_likes = total_likes / valid_videos_for_likes if valid_videos_for_likes > 0 else 0.0
-
-    video_data.sort(key=lambda x: x["published_at"])
-
-    return video_data, video_stats, avg_likes, recent_titles
+    return all_videos, video_stats, avg_likes, titles
 
 
-def calculate_upload_frequency(video_data):
-    if len(video_data) < 2:
-        return "N/A (Insufficient data)"
+def retrieve_video_stats(video_ids, yt_client):
+    stats_map = {}
+    for i in range(0, len(video_ids), 50):
+        batch = video_ids[i:i + 50]
+        try:
+            response = yt_client.videos().list(
+                part="statistics,snippet",
+                id=",".join(batch)
+            ).execute()
 
-    first_video_date = video_data[0]["published_at"]
-    last_video_date = video_data[-1]["published_at"]
+            for item in response.get("items", []):
+                vid = item["id"]
+                stat = item.get("statistics", {})
+                snip = item.get("snippet", {})
+                stats_map[vid] = {
+                    "likes": int(stat.get("likeCount", 0)),
+                    "views": int(stat.get("viewCount", 0)),
+                    "comments": int(stat.get("commentCount", 0)),
+                    "title": snip.get("title", "Untitled")
+                }
+        except Exception as e:
+            print(f"Error during batch video stat fetch: {e}")
+            for vid in batch:
+                stats_map[vid] = {"likes": 0, "views": 0, "comments": 0, "title": "N/A"}
 
-    time_delta = last_video_date - first_video_date
-    days_span = time_delta.total_seconds() / (60 * 60 * 24)
-
-    if days_span <= 0:
-        return "N/A (Videos too close in time)"
-
-    videos_per_day = (len(video_data) - 1) / days_span
-    videos_per_week = videos_per_day * 7
-
-    return f"{videos_per_week:.2f} videos/week"
+    return stats_map
 
 
-def calculate_engagement_rate(avg_likes, subscribers):
-    if isinstance(subscribers, str) or subscribers == 0 or subscribers is None:
+def estimate_upload_rate(videos):
+    if len(videos) < 2:
+        return "Too few videos"
+
+    delta_days = (videos[-1]["published_at"] - videos[0]["published_at"]).days
+    if delta_days <= 0:
+        return "Uploads too close together"
+
+    freq = (len(videos) - 1) / delta_days * 7  # to weekly estimate
+    return f"{freq:.2f} per week"
+
+
+def compute_engagement(avg_likes, subs):
+    if isinstance(subs, str) or not subs:
         return 0.0
-
-    if avg_likes is None or math.isnan(avg_likes):
-        avg_likes = 0.0
-
-    engagement_rate = (avg_likes / subscribers) * 100
-    return engagement_rate
+    return round((avg_likes / subs) * 100, 2)
 
 
 def main():
-    if API_KEY == "YOUR_API_KEY_HERE":
-        print("ERROR: Please replace 'YOUR_API_KEY_HERE' with your actual YouTube Data API key in the script.")
-        return
-    try:
-        youtube = googleapiclient.discovery.build(
-            API_SERVICE_NAME, API_VERSION, developerKey=API_KEY)
-        print("YouTube API client built successfully.")
-    except Exception as e:
-        print(f"Error building YouTube API client: {e}")
+    if API_KEY == "API Key":
+        print("Reminder: Plug in your actual API Key above!")
         return
 
     try:
-        df_input = pd.read_csv(CSV_FILE_PATH)
-        if COLUMN_NAME_WITH_URLS not in df_input.columns:
-            print(
-                f"Error: Column '{COLUMN_NAME_WITH_URLS}' not found in {CSV_FILE_PATH}")
-            print(f"Available columns: {df_input.columns.tolist()}")
-            return
-        urls = df_input[COLUMN_NAME_WITH_URLS].dropna().unique().tolist()
-        print(f"Read {len(urls)} unique YouTube profiles from {CSV_FILE_PATH}")
-    except FileNotFoundError:
-        print(f"Error: Input CSV file not found at {CSV_FILE_PATH}")
+        yt = googleapiclient.discovery.build(API_SERVICE_NAME, API_VERSION, developerKey=API_KEY)
+    except Exception as err:
+        print(f"API client setup failed: {err}")
         return
-    except Exception as e:
-        print(f"Error reading CSV file: {e}")
+
+    try:
+        df = pd.read_csv(CSV_FILE_PATH)
+        profiles = df[COLUMN_NAME_WITH_URLS].dropna().unique()
+    except Exception as err:
+        print(f"Error loading input CSV: {err}")
         return
 
     results = []
-    processed_channels = set()
+    seen_channels = set()
 
-    for url in urls:
-        print(f"\n--- Processing: {url} ---")
-        channel_id = None
-        channel_info = None
-        try:
-            # 1. Get Channel ID
-            channel_id = get_channel_id_from_input(url, youtube)
-            if not channel_id:
-                print(
-                    f"Skipping URL '{url}' as Channel ID could not be determined.")
-                results.append({
-                    'Input URL': url,
-                    'Channel Name': 'Not Found',
-                    'Subscribers': 'N/A',
-                    'Total Views': 'N/A',
-                    'Avg. Likes': 'N/A',
-                    'Video Titles': [],
-                    'Engagement Rate': 0.0,
-                    'Upload Frequency': 'N/A',
-                    'Error': 'Could not find Channel ID'
-                })
-                continue
+    for profile in profiles:
+        print(f"\n>> Checking: {profile}")
+        cid = extract_channel_id(profile, yt)
 
-            if channel_id in processed_channels:
-                print(
-                    f"Skipping duplicate channel ID: {channel_id} (from URL: {url})")
-                continue
-            processed_channels.add(channel_id)
+        if not cid or cid in seen_channels:
+            print("Skipping duplicate or unresolved profile.")
+            continue
+        seen_channels.add(cid)
 
-            print(f"Fetching stats for Channel ID: {channel_id}")
-            channel_info = get_channel_data(channel_id, youtube)
-            if not channel_info:
-                print(
-                    f"Skipping channel ID {channel_id} due to error fetching data.")
-                results.append({
-                    'Input URL': url,
-                    'Channel Name': f'Error fetching ID {channel_id}',
-                    'Subscribers': 'N/A',
-                    'Total Views': 'N/A',
-                    'Avg. Likes': 'N/A',
-                    'Video Titles': [],
-                    'Engagement Rate': 0.0,
-                    'Upload Frequency': 'N/A',
-                    'Error': 'Failed to fetch channel data'
-                })
-                continue
-            avg_likes = 0.0
-            recent_titles = []
-            upload_frequency = "N/A"
-            video_data = []
-
-            if channel_info.get("uploads_playlist_id") and channel_info.get("total_videos", 0) > 0:
-                print(
-                    f"Fetching recent videos from playlist: {channel_info['uploads_playlist_id']}")
-                fetch_count = min(VIDEOS_TO_FETCH_PER_CHANNEL,
-                                  channel_info["total_videos"])
-                video_data, _, avg_likes, recent_titles = get_recent_videos_and_stats(
-                    channel_info["uploads_playlist_id"], youtube, max_results=fetch_count
-                )
-                if video_data:
-                    upload_frequency = calculate_upload_frequency(video_data)
-                else:
-                    print(
-                        "No valid video data returned for frequency/likes calculation.")
-
-            elif channel_info.get("total_videos", 0) == 0:
-                print("Channel has no videos.")
-                upload_frequency = "N/A (No videos)"
-
-            else:
-                print("Could not find uploads playlist ID.")
-                upload_frequency = "N/A (Playlist missing)"
-
-            engagement_rate = calculate_engagement_rate(
-                avg_likes, channel_info["subscribers"])
-
+        info = fetch_channel_info(cid, yt)
+        if not info:
             results.append({
-                'Input URL': url,
-                'Channel Name': channel_info["channel_name"],
-                'Subscribers': channel_info["subscribers"],
-                'Total Views': channel_info["total_views"],
-                'Avg. Likes': round(avg_likes, 2) if isinstance(avg_likes, (int, float)) else 'N/A',
-                'Video Titles': recent_titles[:VIDEOS_TO_FETCH_PER_CHANNEL],
-                'Engagement Rate': round(engagement_rate, 4),
-                'Upload Frequency': upload_frequency,
-                'Channel ID': channel_id,
-                'Total Videos': channel_info.get('total_videos', 'N/A'),
-                'Error': None
+                "Input URL": profile,
+                "Channel Name": "N/A",
+                "Subscribers": "N/A",
+                "Total Views": "N/A",
+                "Avg. Likes": "N/A",
+                "Engagement Rate": 0.0,
+                "Upload Frequency": "N/A",
+                "Video Titles": [],
+                "Error": "Channel info not found"
             })
-            print(f"Successfully processed: {channel_info['channel_name']}")
+            continue
 
-            time.sleep(0.5)
+        vids, _, avg_likes, titles = fetch_videos_from_playlist(info.get("uploads_playlist_id", ""), yt)
+        freq = estimate_upload_rate(vids) if vids else "N/A"
+        engage = compute_engagement(avg_likes, info["subscribers"])
 
-        except HttpError as e:
-            print(
-                f"STOPPING PROCESSING due to API Error (likely Quota Exceeded) for {url}: {e}")
-            results.append({
-                'Input URL': url,
-                'Channel Name': f'API Error for ID {channel_id}' if channel_id else 'API Error',
-                'Subscribers': 'N/A',
-                'Total Views': 'N/A',
-                'Avg. Likes': 'N/A',
-                'Video Titles': [],
-                'Engagement Rate': 0.0,
-                'Upload Frequency': 'N/A',
-                'Error': f'API Error: {e.resp.status} {e.reason}'
-            })
+        results.append({
+            "Input URL": profile,
+            "Channel Name": info["channel_name"],
+            "Subscribers": info["subscribers"],
+            "Total Views": info["total_views"],
+            "Avg. Likes": round(avg_likes, 2),
+            "Engagement Rate": engage,
+            "Upload Frequency": freq,
+            "Video Titles": titles,
+            "Channel ID": info["channel_id"],
+            "Total Videos": info.get("total_videos", "N/A"),
+            "Error": None
+        })
 
-            if e.resp.status == 403 and 'quotaExceeded' in str(e):
-                print("Quota Exceeded. Aborting further processing.")
-                break
+        time.sleep(0.5)  # trying to avoid hitting API rate limits
 
-        except Exception as e:
-            print(f"An unexpected error occurred processing {url}: {e}")
-            results.append({
-                'Input URL': url,
-                'Channel Name': f'Unexpected Error for ID {channel_id}' if channel_id else 'Unexpected Error',
-                'Subscribers': 'N/A',
-                'Total Views': 'N/A',
-                'Avg. Likes': 'N/A',
-                'Video Titles': [],
-                'Engagement Rate': 0.0,
-                'Upload Frequency': 'N/A',
-                'Error': str(e)
-            })
-
-    df_results = pd.DataFrame(results)
-
-    output_columns = [
-        'Channel Name',
-        'Subscribers',
-        'Total Views',
-        'Avg. Likes',
-        'Engagement Rate',
-        'Upload Frequency',
-        'Video Titles',
-        'Input URL',
-        'Channel ID',
-        'Total Videos',
-        'Error'
-    ]
-    df_results = df_results.reindex(columns=output_columns, fill_value='N/A')
-
-    df_results['Engagement Rate'] = pd.to_numeric(
-        df_results['Engagement Rate'], errors='coerce')
-    df_results = df_results.sort_values(
-        by="Engagement Rate", ascending=False, na_position='last')
-
-    print("\n--- Analysis Results ---")
-    print(df_results.to_string())
-
-    try:
-        df_results.to_csv(OUTPUT_CSV_FILE_PATH,
-                          index=False, encoding='utf-8-sig')
-        print(f"\nResults saved to {OUTPUT_CSV_FILE_PATH}")
-    except Exception as e:
-        print(f"\nError saving results to CSV: {e}")
+    output_df = pd.DataFrame(results)
+    output_df.to_csv(OUTPUT_CSV_FILE_PATH, index=False, encoding='utf-8-sig')
+    print(f"\nDone. Results saved to {OUTPUT_CSV_FILE_PATH}")
 
 
 if __name__ == "__main__":
